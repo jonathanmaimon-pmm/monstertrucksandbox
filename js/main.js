@@ -5,7 +5,10 @@
  * score tracker, stunt detection, camera follow, and the main animation loop.
  */
 
-import * as THREE from 'three';
+import * as THREE  from 'three';
+import * as CANNON from 'cannon-es';
+window.CANNON = CANNON;   // expose for truck.js / arenas.js (loaded after this)
+
 import { Controls } from './controls.js';
 import { UI }       from './ui.js';
 import { Truck }    from './truck.js';
