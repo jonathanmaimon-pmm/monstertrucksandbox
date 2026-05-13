@@ -75,6 +75,16 @@ export class UI {
         this._stuntTimeout = setTimeout(() => el.classList.remove('show'), 1600);
     }
 
+    showFlipWarning(secsLeft) {
+        const el = document.getElementById('flip-warning');
+        if (el) { el.style.display = ''; el.textContent = `⚠️ AUTO FLIP IN ${secsLeft}...`; }
+    }
+
+    clearFlipWarning() {
+        const el = document.getElementById('flip-warning');
+        if (el) el.style.display = 'none';
+    }
+
     showGameOver(score, isTimedMode, breakdown) {
         document.getElementById('gameover-title').textContent =
             isTimedMode ? '⏱ TIME\'S UP!' : '🏁 NICE DRIVING!';
@@ -228,9 +238,10 @@ export class UI {
 
         // Mobile action buttons
         const boostBtn = document.getElementById('btn-boost');
+        const jumpBtn  = document.getElementById('btn-jump');
         const flipBtn  = document.getElementById('btn-flip');
         if (g.controls) {
-            g.controls.setupActionButtons(boostBtn, flipBtn);
+            g.controls.setupActionButtons(boostBtn, jumpBtn, flipBtn);
         }
 
         // Joystick
@@ -239,5 +250,10 @@ export class UI {
         if (g.controls) {
             g.controls.setupJoystick(joystickBase, joystickKnob);
         }
+
+        // Keyboard hint for desktop — add Space = jump to hint text
+        const hint = document.querySelector('.menu-controls-hint span');
+        if (hint) hint.textContent =
+            'Desktop: WASD/Arrows = drive  ·  Space = jump  ·  Shift = boost  ·  Esc = pause';
     }
 }

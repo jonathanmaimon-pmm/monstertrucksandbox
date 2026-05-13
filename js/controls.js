@@ -1,7 +1,16 @@
 /**
- * Controls — keyboard + virtual joystick + gamepad input.
- * All state is normalised into simple boolean flags so the truck
- * doesn't need to know where the input came from.
+ * Controls — keyboard + virtual joystick + gamepad.
+ *
+ * Key layout (desktop):
+ *   W / ↑      = forward
+ *   S / ↓      = reverse
+ *   A / ←      = steer left
+ *   D / →      = steer right
+ *   Space      = JUMP
+ *   Shift      = BOOST
+ *   B / X      = brake
+ *   F / R      = flip reset (manual)
+ *   Escape / P = pause
  */
 export class Controls {
     constructor() {
@@ -11,15 +20,15 @@ export class Controls {
         this.right    = false;
         this.brake    = false;
         this.boost    = false;
+        this.jump     = false;
         this.flip     = false;
+        this.pause    = false;
 
-        // Touch joystick raw axes (-1 … 1)
         this._joyX = 0;
         this._joyY = 0;
-
         this._keyMap = {};
+
         this._setupKeyboard();
-        this._gamepadIndex = null;
     }
 
     // ----------------------------------------------------------------
@@ -29,11 +38,15 @@ export class Controls {
         window.addEventListener('keydown', (e) => {
             this._keyMap[e.code] = true;
             this._syncKeys();
-            // Prevent page scroll on arrow keys / space
             if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) {
                 e.preventDefault();
             }
+            // One-shot actions on keydown
+            if (e.code === 'Space' && !e.repeat)    this.jump  = true;
+            if ((e.code === 'KeyF' || e.code === 'KeyR') && !e.repeat) this.flip = true;
+            if ((e.code === 'Escape' || e.code === 'KeyP') && !e.repeat) this.pause = true;
         });
+
         window.addEventListener('keyup', (e) => {
             this._keyMap[e.code] = false;
             this._syncKeys();
@@ -46,84 +59,79 @@ export class Controls {
         this.backward = !!(k['ArrowDown']  || k['KeyS']);
         this.left     = !!(k['ArrowLeft']  || k['KeyA']);
         this.right    = !!(k['ArrowRight'] || k['KeyD']);
-        this.brake    = !!(k['Space']);
+        this.brake    = !!(k['KeyB']       || k['KeyX']);
         this.boost    = !!(k['ShiftLeft']  || k['ShiftRight']);
     }
 
     // ----------------------------------------------------------------
-    // Virtual Joystick (touch)
+    // Virtual joystick
     // ----------------------------------------------------------------
     setupJoystick(baseEl, knobEl) {
-        const MAX_DIST = 46; // pixels from centre
-        let active = false;
-        let startX = 0, startY = 0;
+        const MAX = 46;
+        let active = false, startX = 0, startY = 0;
 
-        const getTouch = (e) => {
-            const t = e.touches[0] || e.changedTouches[0];
+        const getT = (e) => {
+            const t = e.touches ? e.touches[0] || e.changedTouches[0] : e;
             return { x: t.clientX, y: t.clientY };
         };
 
-        const onStart = (e) => {
+        baseEl.addEventListener('touchstart', (e) => {
             e.preventDefault();
             active = true;
-            const p = getTouch(e);
-            startX = p.x; startY = p.y;
-        };
+            const p = getT(e); startX = p.x; startY = p.y;
+        }, { passive: false });
 
-        const onMove = (e) => {
+        baseEl.addEventListener('touchmove', (e) => {
             e.preventDefault();
             if (!active) return;
-            const p = getTouch(e);
-            let dx = p.x - startX;
-            let dy = p.y - startY;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist > MAX_DIST) {
-                dx = (dx / dist) * MAX_DIST;
-                dy = (dy / dist) * MAX_DIST;
-            }
+            const p = getT(e);
+            let dx = p.x - startX, dy = p.y - startY;
+            const d = Math.sqrt(dx*dx + dy*dy);
+            if (d > MAX) { dx = dx/d*MAX; dy = dy/d*MAX; }
             knobEl.style.transform = `translate(${dx}px,${dy}px)`;
-            this._joyX = dx / MAX_DIST;
-            this._joyY = dy / MAX_DIST;
+            this._joyX = dx / MAX;
+            this._joyY = dy / MAX;
             this._syncJoy();
-        };
+        }, { passive: false });
 
-        const onEnd = (e) => {
+        const end = (e) => {
             e.preventDefault();
             active = false;
-            knobEl.style.transform = 'translate(0,0)';
+            knobEl.style.transform = '';
             this._joyX = 0; this._joyY = 0;
             this._syncJoy();
         };
-
-        baseEl.addEventListener('touchstart',  onStart, { passive: false });
-        baseEl.addEventListener('touchmove',   onMove,  { passive: false });
-        baseEl.addEventListener('touchend',    onEnd,   { passive: false });
-        baseEl.addEventListener('touchcancel', onEnd,   { passive: false });
+        baseEl.addEventListener('touchend',    end, { passive: false });
+        baseEl.addEventListener('touchcancel', end, { passive: false });
     }
 
     _syncJoy() {
-        // Joystick overrides keyboard directional state when active
-        const DEAD = 0.2;
-        this.forward  = this._joyY < -DEAD;
-        this.backward = this._joyY >  DEAD;
-        this.left     = this._joyX < -DEAD;
-        this.right    = this._joyX >  DEAD;
+        const D = 0.2;
+        this.forward  = this._joyY < -D;
+        this.backward = this._joyY >  D;
+        this.left     = this._joyX < -D;
+        this.right    = this._joyX >  D;
     }
 
     // ----------------------------------------------------------------
-    // Action buttons (Boost, Flip) — wired from UI
+    // Action buttons (touch + mouse)
     // ----------------------------------------------------------------
-    setupActionButtons(boostEl, flipEl) {
+    setupActionButtons(boostEl, jumpEl, flipEl) {
         const hold = (el, flag) => {
-            const set = (v) => { this[flag] = v; };
-            el.addEventListener('touchstart',  (e) => { e.preventDefault(); set(true);  }, { passive: false });
-            el.addEventListener('touchend',    (e) => { e.preventDefault(); set(false); }, { passive: false });
-            el.addEventListener('touchcancel', (e) => { e.preventDefault(); set(false); }, { passive: false });
-            el.addEventListener('mousedown', () => set(true));
-            el.addEventListener('mouseup',   () => set(false));
+            if (!el) return;
+            el.addEventListener('touchstart',  (e) => { e.preventDefault(); this[flag] = true;  }, { passive: false });
+            el.addEventListener('touchend',    (e) => { e.preventDefault(); this[flag] = false; }, { passive: false });
+            el.addEventListener('touchcancel', (e) => { e.preventDefault(); this[flag] = false; }, { passive: false });
+            el.addEventListener('mousedown',  () => this[flag] = true);
+            el.addEventListener('mouseup',    () => this[flag] = false);
         };
         hold(boostEl, 'boost');
         hold(flipEl,  'flip');
+        // Jump is a one-shot — set true on press, truck.js resets it
+        if (jumpEl) {
+            jumpEl.addEventListener('touchstart',  (e) => { e.preventDefault(); this.jump = true; }, { passive: false });
+            jumpEl.addEventListener('mousedown',   ()  => { this.jump = true; });
+        }
     }
 
     // ----------------------------------------------------------------
@@ -131,23 +139,20 @@ export class Controls {
     // ----------------------------------------------------------------
     pollGamepad() {
         const pads = navigator.getGamepads ? navigator.getGamepads() : [];
-        for (let i = 0; i < pads.length; i++) {
-            const gp = pads[i];
+        for (const gp of pads) {
             if (!gp) continue;
-            // Left stick or d-pad
-            const lx = gp.axes[0] || 0;
-            const ly = gp.axes[1] || 0;
-            const DEAD = 0.2;
-            if (Math.abs(lx) > DEAD || Math.abs(ly) > DEAD) {
-                this.forward  = ly < -DEAD;
-                this.backward = ly >  DEAD;
-                this.left     = lx < -DEAD;
-                this.right    = lx >  DEAD;
+            const lx = gp.axes[0] || 0, ly = gp.axes[1] || 0;
+            const D = 0.25;
+            if (Math.abs(lx) > D || Math.abs(ly) > D) {
+                this.forward  = ly < -D;
+                this.backward = ly >  D;
+                this.left     = lx < -D;
+                this.right    = lx >  D;
             }
-            // A / Cross = boost, B / Circle = brake
-            if (gp.buttons[0]) this.boost  = gp.buttons[0].pressed;
-            if (gp.buttons[1]) this.brake  = gp.buttons[1].pressed;
-            if (gp.buttons[2]) this.flip   = gp.buttons[2].pressed;
+            if (gp.buttons[0]?.pressed) this.boost = true;
+            if (gp.buttons[2]?.pressed && !this._gpJumpPrev) this.jump = true;
+            this._gpJumpPrev = gp.buttons[2]?.pressed;
+            if (gp.buttons[1]?.pressed) this.brake = true;
             break;
         }
     }

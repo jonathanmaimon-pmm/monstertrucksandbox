@@ -2,272 +2,290 @@ import * as THREE  from 'three';
 import * as CANNON from 'cannon-es';
 
 /**
- * Arena builder — returns { objects, spawnPos }
+ * Arena builder — returns { objects, spawnPos }.
+ * objects: array of { mesh, body, isDestructible, points, label, destroyed, origY }
  *
- * objects is an array of { mesh, body, isDestructible, points, destroyed }
- * used by main.js for collision scoring and scene cleanup.
- *
- * Three arenas:
- *   0 = Desert Dunes  — orange/tan, sand dunes, car stacks, barrels
- *   1 = City Crusher  — dark asphalt, parked cars, urban obstacles
- *   2 = Stadium Slam  — green/brown, big ramps, pyramids, tyre stacks
+ * Terrain approach: a bumpy ground is created by combining a flat physics plane
+ * with many partially-buried static "bump" boxes that protrude slightly.
+ * This gives real physical bumps without the complexity of a heightfield.
  */
 
 export function buildArena(index, scene, world) {
-    cleanupArena(scene, world); // safety: remove previous tagged objects
-    const builders = [buildDesert, buildCity, buildStadium];
-    return (builders[index] || builders[0])(scene, world);
+    cleanupArena(scene, world);
+    return [buildDesert, buildCity, buildStadium][index % 3](scene, world);
 }
 
-// Tag physics bodies so we can clean up later
-const TAG = '__arenaBody';
-function tag(body) { body[TAG] = true; return body; }
+// ---- Tag helpers ---------------------------------------------------
+const TAG = '__arena';
+function tagBody(b) { b[TAG] = true; return b; }
+function tagMesh(m) { m.__arenaTag = true; return m; }
+function addToScene(scene, mesh) { tagMesh(mesh); scene.add(mesh); return mesh; }
 
 export function cleanupArena(scene, world) {
-    const toRemove = world.bodies.filter(b => b[TAG]);
-    toRemove.forEach(b => world.removeBody(b));
-    const meshes = scene.children.filter(c => c.__arenaTag);
-    meshes.forEach(m => scene.remove(m));
+    world.bodies.filter(b => b[TAG]).forEach(b => world.removeBody(b));
+    scene.children.filter(c => c.__arenaTag).forEach(c => scene.remove(c));
 }
 
 // ====================================================================
-// Shared helpers
+// Shared geometry helpers
 // ====================================================================
-function makeGround(scene, world, size, color) {
-    // Physics
-    const groundBody = new CANNON.Body({ mass: 0, material: new CANNON.Material('ground') });
-    groundBody.addShape(new CANNON.Plane());
-    groundBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2);
-    tag(groundBody);
-    world.addBody(groundBody);
 
-    // Visual
-    const geo  = new THREE.PlaneGeometry(size, size, 32, 32);
+function setSky(scene, color, fogDensity = 0.010) {
+    scene.background = new THREE.Color(color);
+    scene.fog = new THREE.FogExp2(color, fogDensity);
+}
+
+/** Flat infinite ground plane + large visible disc */
+function makeGround(scene, world, color, size = 240) {
+    const body = new CANNON.Body({ mass: 0 });
+    body.addShape(new CANNON.Plane());
+    body.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2);
+    tagBody(body);
+    world.addBody(body);
+
+    const geo  = new THREE.PlaneGeometry(size, size, 48, 48);
     const mat  = new THREE.MeshLambertMaterial({ color });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.rotation.x = -Math.PI / 2;
     mesh.receiveShadow = true;
-    mesh.__arenaTag = true;
-    scene.add(mesh);
-
-    return { groundBody, groundMaterial: groundBody.material };
+    addToScene(scene, mesh);
 }
 
-function makeBoundaryWalls(scene, world, halfSize, wallH) {
-    const wallMat = new THREE.MeshLambertMaterial({ color: 0x445566, transparent: true, opacity: 0.0 });
-    const defs = [
-        { pos: [0, wallH/2, -halfSize], rot: null },
-        { pos: [0, wallH/2,  halfSize], rot: null },
-        { pos: [-halfSize, wallH/2, 0], rot: [0,1,0,Math.PI/2] },
-        { pos: [ halfSize, wallH/2, 0], rot: [0,1,0,Math.PI/2] },
-    ];
-    defs.forEach(({ pos, rot }) => {
-        const body = new CANNON.Body({ mass: 0 });
-        body.addShape(new CANNON.Box(new CANNON.Vec3(halfSize, wallH/2, 0.5)));
-        body.position.set(...pos);
-        if (rot) body.quaternion.setFromAxisAngle(new CANNON.Vec3(rot[0],rot[1],rot[2]), rot[3]);
-        tag(body);
-        world.addBody(body);
+/** Invisible boundary walls keep the truck in the arena */
+function makeBounds(scene, world, half, wallH = 10) {
+    [
+        { p:[  0, wallH/2, -half], hl:[half,  wallH/2, 0.5] },
+        { p:[  0, wallH/2,  half], hl:[half,  wallH/2, 0.5] },
+        { p:[-half, wallH/2, 0],  hl:[0.5,  wallH/2, half] },
+        { p:[ half, wallH/2, 0],  hl:[0.5,  wallH/2, half] },
+    ].forEach(({ p, hl }) => {
+        const b = new CANNON.Body({ mass: 0 });
+        b.addShape(new CANNON.Box(new CANNON.Vec3(...hl)));
+        b.position.set(...p);
+        tagBody(b);
+        world.addBody(b);
     });
 }
 
-function addStaticBox(scene, world, hw, hh, hl, px, py, pz, color, rx=0, ry=0, rz=0) {
+/** Static box — physics + visual */
+function staticBox(scene, world, hw, hh, hl, x, y, z, color, rx=0, ry=0, rz=0) {
     const body = new CANNON.Body({ mass: 0 });
     body.addShape(new CANNON.Box(new CANNON.Vec3(hw, hh, hl)));
-    body.position.set(px, py, pz);
-    if (rx || ry || rz) {
-        const q = new CANNON.Quaternion();
-        q.setFromEuler(rx, ry, rz);
+    body.position.set(x, y, z);
+    if (rx||ry||rz) {
+        const q = new CANNON.Quaternion(); q.setFromEuler(rx, ry, rz);
         body.quaternion.copy(q);
     }
-    tag(body);
+    tagBody(body);
     world.addBody(body);
 
-    const geo  = new THREE.BoxGeometry(hw*2, hh*2, hl*2);
-    const mat  = new THREE.MeshLambertMaterial({ color });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(px, py, pz);
+    const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(hw*2, hh*2, hl*2),
+        new THREE.MeshLambertMaterial({ color })
+    );
+    mesh.position.set(x, y, z);
     mesh.rotation.set(rx, ry, rz);
     mesh.castShadow = mesh.receiveShadow = true;
-    mesh.__arenaTag = true;
-    scene.add(mesh);
-
+    addToScene(scene, mesh);
     return { mesh, body };
 }
 
-function addRamp(scene, world, hw, hh, hl, px, py, pz, angle, color, ryaw=0) {
-    // A ramp is just a tilted box
+/** Tilted ramp (static box at angle) */
+function ramp(scene, world, hw, hh, hl, x, y, z, pitch, yaw, color) {
     const body = new CANNON.Body({ mass: 0 });
     body.addShape(new CANNON.Box(new CANNON.Vec3(hw, hh, hl)));
-    body.position.set(px, py, pz);
-    const q = new CANNON.Quaternion();
-    q.setFromEuler(angle, ryaw, 0);
+    body.position.set(x, y, z);
+    const q = new CANNON.Quaternion(); q.setFromEuler(pitch, yaw, 0);
     body.quaternion.copy(q);
-    tag(body);
+    tagBody(body);
     world.addBody(body);
 
-    const geo  = new THREE.BoxGeometry(hw*2, hh*2, hl*2);
-    const mat  = new THREE.MeshLambertMaterial({ color });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(px, py, pz);
-    mesh.rotation.set(angle, ryaw, 0);
+    const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(hw*2, hh*2, hl*2),
+        new THREE.MeshLambertMaterial({ color })
+    );
+    mesh.position.set(x, y, z);
+    mesh.rotation.set(pitch, yaw, 0);
     mesh.castShadow = mesh.receiveShadow = true;
-    mesh.__arenaTag = true;
-    scene.add(mesh);
-
+    addToScene(scene, mesh);
     return { mesh, body };
 }
 
-function addDynamic(scene, world, shape, mass, px, py, pz, color, rx=0, ry=0, rz=0) {
+/** Dynamic crushable object — box or cylinder */
+function dynBox(scene, world, hw, hh, hl, x, y, z, color, mass, ry=0) {
     const body = new CANNON.Body({ mass });
-    body.addShape(shape);
-    body.position.set(px, py, pz);
-    if (rx || ry || rz) {
-        const q = new CANNON.Quaternion();
-        q.setFromEuler(rx, ry, rz);
-        body.quaternion.copy(q);
-    }
-    body.linearDamping  = 0.3;
-    body.angularDamping = 0.4;
-    tag(body);
+    body.addShape(new CANNON.Box(new CANNON.Vec3(hw, hh, hl)));
+    body.position.set(x, y, z);
+    if (ry) { const q = new CANNON.Quaternion(); q.setFromEuler(0,ry,0); body.quaternion.copy(q); }
+    body.linearDamping = 0.25; body.angularDamping = 0.35;
+    tagBody(body);
     world.addBody(body);
 
-    let geo;
-    if (shape instanceof CANNON.Box) {
-        geo = new THREE.BoxGeometry(shape.halfExtents.x*2, shape.halfExtents.y*2, shape.halfExtents.z*2);
-    } else {
-        // Cylinder
-        geo = new THREE.CylinderGeometry(shape.radiusTop, shape.radiusBottom, shape.height, 16);
-    }
-    const mat  = new THREE.MeshLambertMaterial({ color });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(px, py, pz);
-    mesh.rotation.set(rx, ry, rz);
+    const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(hw*2, hh*2, hl*2),
+        new THREE.MeshLambertMaterial({ color })
+    );
+    mesh.position.set(x, y, z);
+    mesh.rotation.y = ry;
     mesh.castShadow = true;
-    mesh.__arenaTag = true;
-    scene.add(mesh);
-
-    return { mesh, body, isDestructible: true, points: 0, destroyed: false, origY: py };
+    addToScene(scene, mesh);
+    return { mesh, body, isDestructible:true, destroyed:false, points:0, label:'💥', origY:y };
 }
 
-function addDecoration(scene, geo, mat, px, py, pz, rx=0, ry=0) {
-    const m = new THREE.Mesh(geo, mat);
-    m.position.set(px, py, pz);
-    m.rotation.set(rx, ry, 0);
-    m.castShadow = true;
-    m.__arenaTag = true;
-    scene.add(m);
-    return m;
+function dynCyl(scene, world, r, h, x, y, z, color, mass) {
+    const body = new CANNON.Body({ mass });
+    body.addShape(new CANNON.Cylinder(r, r, h, 12));
+    body.position.set(x, y, z);
+    body.linearDamping = 0.25; body.angularDamping = 0.35;
+    tagBody(body);
+    world.addBody(body);
+
+    const mesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(r, r, h, 14),
+        new THREE.MeshLambertMaterial({ color })
+    );
+    mesh.position.set(x, y, z);
+    mesh.castShadow = true;
+    addToScene(scene, mesh);
+    return { mesh, body, isDestructible:true, destroyed:false, points:0, label:'💥', origY:y };
 }
 
-function addSky(scene, color) {
-    scene.background = new THREE.Color(color);
-    scene.fog = new THREE.FogExp2(color, 0.012);
+/**
+ * Scatter terrain bumps — partially buried boxes/rounded "dunes".
+ * These give the ground physical texture and visual variety.
+ */
+function scatterBumps(scene, world, defs) {
+    defs.forEach(([x, z, rx, rz, h, color]) => {
+        const bury = h * 0.35;  // bury 35% below ground
+        staticBox(scene, world, rx, h, rz, x, h - bury, z, color);
+    });
+}
+
+/** Add directional sun/moon light with shadows */
+function sunLight(scene, color, intensity, x, y, z, shadowRange = 90) {
+    const l = new THREE.DirectionalLight(color, intensity);
+    l.position.set(x, y, z);
+    l.castShadow = true;
+    l.shadow.mapSize.set(2048, 2048);
+    l.shadow.camera.left   = -shadowRange;
+    l.shadow.camera.right  =  shadowRange;
+    l.shadow.camera.top    =  shadowRange;
+    l.shadow.camera.bottom = -shadowRange;
+    l.shadow.camera.far    = 300;
+    tagMesh(l);
+    scene.add(l);
+    return l;
+}
+
+function ambLight(scene, color, intensity) {
+    const a = new THREE.AmbientLight(color, intensity);
+    tagMesh(a);
+    scene.add(a);
+    return a;
 }
 
 // ====================================================================
 // Arena 0 — Desert Dunes 🏜️
 // ====================================================================
 function buildDesert(scene, world) {
-    addSky(scene, '#e8a050');
-
-    const { groundMaterial } = makeGround(scene, world, 200, 0xc8843a);
-    makeBoundaryWalls(scene, world, 60, 8);
+    setSky(scene, '#d4783a', 0.009);
+    makeGround(scene, world, 0xc47a35);
+    makeBounds(scene, world, 68);
 
     const objects = [];
+    const sand = 0xb87530, rock = 0x9a6520, rust = 0x8b3a1a;
 
-    // Sand dune mounds (static rounded bumps using tall flat boxes)
-    const duneColor = 0xd4924a;
-    const dunePositions = [
-        [10, 0, 15], [-15, 0, 20], [25, 0, 5], [-8, 0, -18], [18, 0, -25], [-28, 0, 8],
+    // ---- Terrain bumps — scattered across whole arena ----
+    const bumps = [];
+    const bumpSeeds = [
+        [ 12, 18, 3.5, 4, 1.4], [-16, 22, 5, 3, 1.8], [ 28, 8, 4, 5, 2.2],
+        [ -8,-20, 6, 4, 1.6], [ 20,-28, 3, 5, 1.2], [-30,  6, 5, 6, 2.5],
+        [-18,-10, 4, 3, 1.0], [ 35,-18, 3, 4, 1.5], [-12, 35, 5, 3, 1.1],
+        [  5,-35, 6, 5, 2.0], [ 42, 20, 3, 3, 0.9], [-42,-12, 4, 5, 1.8],
+        [ 15,-12, 3, 3, 1.0], [-25,-30, 4, 4, 1.4], [ 50, -5, 3, 3, 0.8],
+        [-50, 15, 5, 3, 1.6], [  0, 45, 4, 6, 2.0], [ 30, 40, 3, 4, 1.2],
     ];
-    dunePositions.forEach(([x,,z]) => {
-        const r = 4 + Math.random() * 3;
-        const h = 1.2 + Math.random() * 1.5;
-        addStaticBox(scene, world, r, h, r, x, h, z, duneColor);
-    });
+    bumpSeeds.forEach(([x,z,rx,rz,h]) => bumps.push([x, z, rx, rz, h, sand]));
+    scatterBumps(scene, world, bumps);
 
-    // Big launch ramp (centre)
-    addRamp(scene, world, 4, 0.3, 7, 0, 3.2, 8, -0.42, 0xaa7733);
-    addStaticBox(scene, world, 4, 3.5, 0.5, 0, 3.3, 15, 0xaa7733); // ramp back wall
+    // Rocky outcrops (taller, hard obstacles)
+    [[-35, 30], [38, -22], [-20, -42], [45, 35]].forEach(([x,z]) =>
+        staticBox(scene, world, 2.5, 3.5, 2, x, 3.5, z, rock));
 
-    // Side ramp
-    addRamp(scene, world, 3, 0.25, 5, -20, 2.2, 5, -0.40, 0xaa7733, 0.3);
+    // ---- Ramps ----
+    // Big centre launch ramp (wide, tall)
+    ramp(scene, world,  6, 0.4, 10,   0, 4.8,  14, -0.46, 0, sand);
+    staticBox(scene, world, 6, 5.0, 0.8,  0, 4.8,  24, sand); // back wall
+    staticBox(scene, world, 6, 0.5, 10,   0, 0.0,  14, sand); // ramp floor visible
 
-    // Double-sided jump ramp
-    addRamp(scene, world, 3.5, 0.25, 5, 22, 2.2, -10, -0.38, 0xbb8844);
-    addRamp(scene, world, 3.5, 0.25, 5, 22, 2.2, -20,  0.38, 0xbb8844);
+    // Side ramp L
+    ramp(scene, world,  4.5, 0.3, 8, -22, 3.5,  8, -0.44, 0.25, sand);
+    // Side ramp R
+    ramp(scene, world,  4.5, 0.3, 8,  22, 3.5,  8, -0.44,-0.25, sand);
 
-    // Stacked car wrecks  — 3 piles
-    const carColor = [0x2244aa, 0xaa2222, 0x44aa22];
+    // Double-sided jump (facing each other)
+    ramp(scene, world,  4, 0.3, 7, -5, 3.2, -16, -0.42, 0, rock);
+    ramp(scene, world,  4, 0.3, 7, -5, 3.2, -26,  0.42, 0, rock);
+
+    // Kicker (very steep, short)
+    ramp(scene, world,  3, 0.3, 4, 30, 3.0, -10, -0.65, 0, sand);
+    staticBox(scene, world, 3, 3.2, 0.5, 30, 3.0, -14, sand);
+
+    // Table-top (flat top)
+    staticBox(scene, world, 5, 2.0, 5, -38, 2.0, -20, sand);
+    ramp(scene, world, 5, 0.25, 4, -38, 3.0, -25, -0.55, 0, sand);
+    ramp(scene, world, 5, 0.25, 4, -38, 3.0, -15,  0.55, 0, sand);
+
+    // ---- Car wrecks — 6 piles ----
+    const carCols = [0x1a44aa, 0xaa1a1a, 0x1aaa44, 0xddaa00, 0x883388, 0xee6600];
     [
-        [-12, -15], [5, -20], [20, 10],
-    ].forEach(([cx, cz], pi) => {
-        for (let layer = 0; layer < 2 + (pi % 2); layer++) {
-            const obj = addDynamic(scene, world,
-                new CANNON.Box(new CANNON.Vec3(1.0, 0.45, 1.8)),
-                200,
-                cx + (Math.random()-0.5)*0.5, 0.5 + layer * 0.95, cz + (Math.random()-0.5)*0.5,
-                carColor[pi % carColor.length],
-                0, Math.random() * 0.3 - 0.15, 0
+        [ -12, -16, 2], [  6, -22, 3], [ 20,  12, 2],
+        [ -30, -30, 2], [ 40, -10, 2], [ -5,  40, 3],
+    ].forEach(([cx, cz, layers], pi) => {
+        for (let l = 0; l < layers; l++) {
+            const obj = dynBox(scene, world,
+                1.05, 0.45, 1.85,
+                cx + (Math.random()-.5)*0.4, 0.5 + l*0.95, cz + (Math.random()-.5)*0.4,
+                carCols[pi % carCols.length], 200,
+                (Math.random()-.5) * 0.4
             );
-            obj.points = 150;
-            obj.label  = '🚗 CRUSHED!';
+            obj.points = 150 + l * 50; obj.label = '🚗 CRUSHED!';
             objects.push(obj);
         }
     });
 
-    // Oil barrels
-    for (let i = 0; i < 10; i++) {
-        const angle = (i / 10) * Math.PI * 2;
-        const r = 18 + Math.random() * 8;
-        const obj = addDynamic(scene, world,
-            new CANNON.Cylinder(0.4, 0.4, 1.1, 12),
-            80,
-            Math.cos(angle) * r, 0.55, Math.sin(angle) * r,
-            i % 2 === 0 ? 0xdd4400 : 0x222244
-        );
-        obj.points = 75;
-        obj.label  = '💥 BARREL!';
+    // ---- Oil drums ----
+    for (let i = 0; i < 14; i++) {
+        const a = (i/14)*Math.PI*2;
+        const r = 20 + (i%3)*6;
+        const obj = dynCyl(scene, world, 0.4, 1.1,
+            Math.cos(a)*r, 0.55, Math.sin(a)*r,
+            i%2===0 ? 0xdd3300 : 0x223355, 80);
+        obj.points = 80; obj.label = '🛢️ BARREL!';
         objects.push(obj);
     }
 
-    // Tyre stacks
-    for (let i = 0; i < 6; i++) {
-        const x = (Math.random() - 0.5) * 60;
-        const z = (Math.random() - 0.5) * 60;
-        for (let t = 0; t < 3; t++) {
-            const obj = addDynamic(scene, world,
-                new CANNON.Cylinder(0.55, 0.55, 0.45, 12),
-                40,
-                x, 0.23 + t * 0.46, z,
-                0x222222
-            );
-            obj.points = 40;
-            obj.label  = '🔧 TYRE!';
+    // ---- Tyre stacks — 8 stacks ----
+    const tyrePos = [[-28,12],[18,-8],[8,28],[-5,-38],[30,25],[-38,35],[42,5],[-15,52]];
+    tyrePos.forEach(([tx,tz]) => {
+        for (let t = 0; t < 4; t++) {
+            const obj = dynCyl(scene, world, 0.55, 0.48, tx, 0.24+t*0.49, tz, 0x222222, 45);
+            obj.points = 45; obj.label = '🔧 TYRE!';
             objects.push(obj);
         }
-    }
+    });
 
-    // Big arch (decorative static obstacle)
-    addStaticBox(scene, world, 0.5, 4, 0.5, -5, 4, -5,  0xaa7733);
-    addStaticBox(scene, world, 0.5, 4, 0.5,  5, 4, -5,  0xaa7733);
-    addStaticBox(scene, world, 5.5, 0.5, 0.5, 0, 8, -5, 0xaa7733);
+    // ---- Buried bus wreck (static but dramatic) ----
+    staticBox(scene, world, 1.4, 1.0, 4.5, 15, 0.6, -32, 0xddaa00);
 
-    // Lighting — warm sun
-    const sun = new THREE.DirectionalLight(0xffcc88, 1.4);
-    sun.position.set(30, 60, 20);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.camera.far = 200;
-    sun.shadow.camera.left = sun.shadow.camera.bottom = -80;
-    sun.shadow.camera.right = sun.shadow.camera.top = 80;
-    sun.__arenaTag = true;
-    scene.add(sun);
+    // ---- Arch gate ----
+    staticBox(scene, world, 0.6, 4, 0.6, -6, 4, -6, rock);
+    staticBox(scene, world, 0.6, 4, 0.6,  6, 4, -6, rock);
+    staticBox(scene, world, 6.6, 0.6, 0.6, 0, 8, -6, rock);
 
-    const amb = new THREE.AmbientLight(0xff8844, 0.5);
-    amb.__arenaTag = true;
-    scene.add(amb);
+    // ---- Lighting ----
+    sunLight(scene, 0xffcc88, 1.5, 40, 70, 30);
+    ambLight(scene, 0xff8844, 0.55);
 
     return { objects, spawnPos: new CANNON.Vec3(0, 4, 0) };
 }
@@ -276,273 +294,240 @@ function buildDesert(scene, world) {
 // Arena 1 — City Crusher 🏙️
 // ====================================================================
 function buildCity(scene, world) {
-    addSky(scene, '#1a1a3a');
-    makeGround(scene, world, 200, 0x333344);
-    makeBoundaryWalls(scene, world, 65, 10);
+    setSky(scene, '#1a1a3a', 0.012);
+    makeGround(scene, world, 0x2d2d3e);
+    makeBounds(scene, world, 70);
 
     const objects = [];
+    const asphalt = 0x3a3a50, concrete = 0x7a7a8a, yellow = 0xeecc00;
 
-    // Road markings (decorative flat boxes)
-    for (let z = -40; z <= 40; z += 8) {
-        addStaticBox(scene, world, 0.15, 0.02, 2, 0, 0.01, z, 0xffff00);
-    }
+    // Road stripes
+    for (let z = -55; z <= 55; z += 10)
+        staticBox(scene, world, 0.18, 0.01, 2.5, 0, 0.01, z, yellow);
+    for (let x = -55; x <= 55; x += 10)
+        staticBox(scene, world, 2.5, 0.01, 0.18, x, 0.01, 0, yellow);
 
-    // Rows of parked cars (2 rows)
-    const carColors = [0xcc2222, 0x2255cc, 0x22aa44, 0xeeaa00, 0x8822cc, 0xaa4400];
-    [-28, 28].forEach(rowX => {
-        for (let i = 0; i < 6; i++) {
-            const cz = -25 + i * 9;
-            const col = carColors[(i + (rowX > 0 ? 3 : 0)) % carColors.length];
-            // Car body
-            const body = addDynamic(scene, world,
-                new CANNON.Box(new CANNON.Vec3(1.1, 0.55, 2.0)),
-                250,
-                rowX, 0.6, cz,
-                col
-            );
-            body.points = 200;
-            body.label  = '🚗 CAR CRUSHED!';
-            objects.push(body);
+    // ---- Terrain bumps — potholes / rubble piles ----
+    const rubble = 0x4a4a5a;
+    const cityBumps = [
+        [  8, 12, 2.5, 2, 0.7], [-12, -8, 3, 2, 0.9], [ 22,-20, 2, 3, 0.6],
+        [-22, 20, 2.5,2.5,0.8], [ 15, 30, 3, 2, 1.0], [-35,  5, 2, 4, 0.7],
+        [ 35,-35, 3, 2, 0.8],   [-15,-35, 2, 3, 0.5], [ 45, 15, 2, 2, 0.6],
+        [-45,-20, 3, 2, 0.9],   [  0,-50, 4, 3, 1.2], [  0, 50, 4, 3, 1.2],
+    ];
+    scatterBumps(scene, world, cityBumps.map(([x,z,rx,rz,h]) => [x,z,rx,rz,h,rubble]));
 
-            // Car roof
-            const roof = addDynamic(scene, world,
-                new CANNON.Box(new CANNON.Vec3(0.9, 0.35, 1.1)),
-                60,
-                rowX, 1.55, cz,
-                col
-            );
-            roof.points = 0; // only score the car body
-            objects.push(roof);
+    // ---- Buildings ----
+    const buildingDefs = [
+        [-50,-35, 9, 15, 9], [ 50,-35, 9, 12, 9], [-50, 35, 9, 18, 9], [ 50, 35, 9, 14, 9],
+        [  0,-58, 22, 9, 7], [  0, 58, 22, 9, 7], [-58,  0, 7,  9,22], [ 58,  0, 7,  9,22],
+    ];
+    buildingDefs.forEach(([x,z,hw,hh,hl]) => {
+        staticBox(scene, world, hw, hh, hl, x, hh, z, 0x445566);
+        // Window ledge emissive strip
+        staticBox(scene, world, hw*0.85, 0.25, 0.05, x, hh*1.8, z+hl+0.1, 0xffffaa);
+    });
+
+    // ---- Parked cars — 4 rows ----
+    const carPalette = [0xcc2222, 0x2255cc, 0x22aa44, 0xeeaa00, 0x8822cc, 0xaa4400, 0x22aacc, 0xee2266];
+    [-30, 30].forEach((rowX, ri) => {
+        for (let i = 0; i < 8; i++) {
+            const cz  = -35 + i * 10;
+            const col = carPalette[(i + ri * 3) % carPalette.length];
+            const obj = dynBox(scene, world, 1.15, 0.55, 2.1, rowX, 0.6, cz, col, 250);
+            obj.points = 200; obj.label = '🚗 CAR CRUSHED!';
+            objects.push(obj);
+            // Car roof (linked visually, separate physics)
+            const roof = dynBox(scene, world, 0.9, 0.35, 1.1, rowX, 1.55, cz, col, 50);
+            roof.points = 0; objects.push(roof);
         }
     });
 
-    // Building walls (static obstacles to drive around / into)
-    const buildingData = [
-        [-45, -30, 8, 12, 8],
-        [ 45, -30, 8, 10, 8],
-        [-45,  30, 8, 14, 8],
-        [ 45,  30, 8, 12, 8],
-        [  0, -48, 20, 8, 6],
-        [  0,  48, 20, 8, 6],
-    ];
-    buildingData.forEach(([x, z, hw, hh, hl]) => {
-        addStaticBox(scene, world, hw, hh, hl, x, hh, z, 0x445566);
-        // Windows (emissive squares)
-        addStaticBox(scene, world, hw*0.85, 0.3, 0.05, x, hh*1.2, z+hl+0.1, 0xffffaa);
-    });
-
-    // Concrete ramps
-    addRamp(scene, world, 6, 0.3, 9,  15, 3.5, 0,  -0.38, 0x888899);
-    addRamp(scene, world, 6, 0.3, 9, -15, 3.5, 0,  -0.38, 0x888899);
-    addRamp(scene, world, 5, 0.3, 7,   0, 3.0, 30, -0.38, 0x888899);
-
-    // Bus wreck (big dynamic obstacle)
-    const bus = addDynamic(scene, world,
-        new CANNON.Box(new CANNON.Vec3(1.3, 1.0, 4.2)),
-        500,
-        5, 1.1, 15,
-        0xffcc00
-    );
-    bus.points = 500;
-    bus.label  = '🚌 BUS BASHED!';
+    // ---- Bus ----
+    const bus = dynBox(scene, world, 1.35, 1.05, 4.5, 8, 1.1, 18, 0xffcc00, 500);
+    bus.points = 600; bus.label = '🚌 BUS BASHED!';
     objects.push(bus);
 
-    // Dumpsters
+    // ---- Lorry / truck ----
+    const lorry = dynBox(scene, world, 1.5, 1.2, 5.5, -10, 1.2, -20, 0x994400, 700);
+    lorry.points = 700; lorry.label = '🚛 LORRY LAUNCH!';
+    objects.push(lorry);
+
+    // ---- Dumpsters ----
+    for (let i = 0; i < 8; i++) {
+        const x = -18 + i * 5.5;
+        const obj = dynBox(scene, world, 0.85, 0.75, 1.3, x, 0.75, -5, 0x224422, 130);
+        obj.points = 120; obj.label = '🗑️ SMASHED!';
+        objects.push(obj);
+    }
+
+    // ---- Traffic cones ----
+    for (let i = 0; i < 16; i++) {
+        const x = -18 + i * 2.5;
+        const obj = dynCyl(scene, world, 0.18, 0.72, x, 0.36, 12, 0xff5500, 12);
+        obj.points = 30; obj.label = '🚧 CONE!';
+        objects.push(obj);
+    }
+
+    // ---- Jersey barriers ----
     for (let i = 0; i < 5; i++) {
-        const obj = addDynamic(scene, world,
-            new CANNON.Box(new CANNON.Vec3(0.8, 0.7, 1.2)),
-            120,
-            -20 + i * 8, 0.7, -5,
-            0x224422
-        );
-        obj.points = 100;
-        obj.label  = '🗑️ SMASHED!';
+        const obj = dynBox(scene, world, 0.4, 0.8, 1.5, -10+i*5, 0.8, 30, concrete, 180);
+        obj.points = 60; obj.label = '🧱 BARRIER!';
         objects.push(obj);
     }
 
-    // Traffic cones
-    for (let i = 0; i < 12; i++) {
-        const x = -15 + i * 3;
-        const obj = addDynamic(scene, world,
-            new CANNON.Cylinder(0.15, 0.3, 0.7, 8),
-            15,
-            x, 0.35, 10,
-            0xff5500
+    // ---- Concrete ramps ----
+    ramp(scene, world,  7, 0.4, 11,  18, 4.5,  5, -0.40, 0, concrete);
+    staticBox(scene, world, 7, 4.7, 0.8, 18, 4.5, 16, concrete);
+    ramp(scene, world,  7, 0.4, 11, -18, 4.5,  5, -0.40, 0, concrete);
+    staticBox(scene, world, 7, 4.7, 0.8,-18, 4.5, 16, concrete);
+    ramp(scene, world,  6, 0.35, 9,  0,  3.8, -35, -0.42, 0, concrete);
+
+    // Overpass (high ramp over road)
+    staticBox(scene, world, 4, 5.5, 0.5, 0, 5.5, 5, concrete);
+    ramp(scene, world, 4, 0.3, 8, 0, 5.5, -4,  -0.55, 0, concrete);
+    ramp(scene, world, 4, 0.3, 8, 0, 5.5, 14,   0.55, 0, concrete);
+
+    // ---- Street lights ----
+    for (let i = -4; i <= 4; i++) {
+        staticBox(scene, world, 0.18, 4.2, 0.18, -12, 4.2, i*14, 0x667788);
+        staticBox(scene, world, 1.6, 0.14, 0.14, -10.4, 8.35, i*14, 0x667788);
+        // Globe
+        const globe = new THREE.Mesh(
+            new THREE.SphereGeometry(0.28, 8, 8),
+            new THREE.MeshLambertMaterial({ color: 0xffffee, emissive: 0xffffee, emissiveIntensity: 0.9 })
         );
-        obj.points = 25;
-        obj.label  = '🚧 CONE!';
-        objects.push(obj);
+        globe.position.set(-9.2, 8.4, i*14);
+        addToScene(scene, globe);
     }
 
-    // Street lights (static)
-    for (let i = -3; i <= 3; i++) {
-        const col = i % 2 === 0 ? 0x777788 : 0x777788;
-        addStaticBox(scene, world, 0.2, 4, 0.2, -10, 4, i * 15, col);
-        addStaticBox(scene, world, 1.5, 0.15, 0.15, -8, 8.1, i * 15, col);
-    }
+    // ---- Lighting ----
+    sunLight(scene, 0x8899cc, 0.8, -20, 55, 10);
+    const pt = new THREE.PointLight(0xffeecc, 1.8, 50);
+    pt.position.set(0, 14, 0);
+    tagMesh(pt); scene.add(pt);
+    ambLight(scene, 0x334466, 0.75);
 
-    // Lighting — cool city night
-    const streetLight = new THREE.PointLight(0xffeecc, 2, 40);
-    streetLight.position.set(0, 12, 0);
-    streetLight.__arenaTag = true;
-    scene.add(streetLight);
-
-    const moon = new THREE.DirectionalLight(0x8899cc, 0.8);
-    moon.position.set(-20, 50, 10);
-    moon.castShadow = true;
-    moon.shadow.mapSize.set(2048, 2048);
-    moon.shadow.camera.far = 200;
-    moon.shadow.camera.left = moon.shadow.camera.bottom = -80;
-    moon.shadow.camera.right = moon.shadow.camera.top = 80;
-    moon.__arenaTag = true;
-    scene.add(moon);
-
-    const amb = new THREE.AmbientLight(0x334466, 0.7);
-    amb.__arenaTag = true;
-    scene.add(amb);
-
-    return { objects, spawnPos: new CANNON.Vec3(0, 3, -10) };
+    return { objects, spawnPos: new CANNON.Vec3(0, 3, -12) };
 }
 
 // ====================================================================
 // Arena 2 — Stadium Slam 🏟️
 // ====================================================================
 function buildStadium(scene, world) {
-    addSky(scene, '#6aaeee');
-    makeGround(scene, world, 200, 0x7a4a1e); // dirt
-    makeBoundaryWalls(scene, world, 55, 12);
+    setSky(scene, '#6ab0e8', 0.007);
+    makeGround(scene, world, 0x7a4820);  // dirt
+    makeBounds(scene, world, 62, 14);
 
     const objects = [];
+    const dirt = 0x8a5228, grey = 0x888898, green = 0x3a8a2a;
 
-    // Grass infield
-    addStaticBox(scene, world, 22, 0.05, 30, 0, 0.04, 0, 0x3a8a2a);
+    // Grass infield patches
+    staticBox(scene, world, 24, 0.04, 32, 0, 0.02, 0, green);
 
-    // Stadium stands (static decorative walls around perimeter)
-    const standColor = 0x225599;
+    // Stadium stands (decorative)
     [
-        [0, 2, -58, 55, 8, 2],
-        [0, 2,  58, 55, 8, 2],
-        [-58, 2, 0, 2, 8, 55],
-        [ 58, 2, 0, 2, 8, 55],
-    ].forEach(([x, y, z, hw, hh, hl]) => {
-        addStaticBox(scene, world, hw, hh, hl, x, hh, z, standColor);
-        // Seats (colored strips)
-        addStaticBox(scene, world, hw, 0.4, hl, x, hh*1.95, z, 0xcc3333);
+        [0, 2, -62, 60, 9, 2], [0, 2,  62, 60, 9, 2],
+        [-62, 2, 0, 2, 9, 60], [62, 2, 0, 2, 9, 60],
+    ].forEach(([x,y,z,hw,hh,hl]) => {
+        staticBox(scene, world, hw, hh, hl, x, hh, z, 0x225599);
+        staticBox(scene, world, hw, 0.35, hl, x, hh*1.95, z, 0xcc3333);
     });
 
-    // MAIN BIG RAMPS (the classic stadium pair)
-    // Launch ramp — centre
-    addRamp(scene, world, 7, 0.4, 11, 0, 5.5, 12, -0.48, 0x888888);
-    addStaticBox(scene, world, 7, 5.8, 0.7, 0, 5.5, 23, 0x666666); // back wall
+    // ---- Terrain bumps — dirt mounds across the floor ----
+    const mounds = [
+        [ 18,-12, 3.5,3, 1.8], [-18, 12, 4,3.5,2.0], [ 8, 30, 3,4, 1.4],
+        [-28,-25, 5, 4, 2.5], [ 35, 18, 3,3.5,1.6], [-35,-15, 4, 5, 2.2],
+        [  0,-40, 5, 3, 1.5], [ 40,-35, 3, 3, 1.2], [-10, 50, 4, 4, 1.8],
+        [ 45,  5, 3, 3, 1.0], [-45, 30, 4, 3, 1.5], [ 25,-45, 3, 5, 2.0],
+    ];
+    scatterBumps(scene, world, mounds.map(([x,z,rx,rz,h]) => [x,z,rx,rz,h,dirt]));
 
-    // Landing mound
-    addStaticBox(scene, world, 7, 1.0, 5, 0, 1.0, -10, 0x8a5a2a);
+    // ---- Big launch ramp (centre stage) ----
+    ramp(scene, world,  8, 0.45, 13,   0, 6.5,  16, -0.48, 0, grey);
+    staticBox(scene, world, 8, 6.8, 0.9,  0, 6.5,  29, grey);
+    staticBox(scene, world, 8, 0.5, 13,   0, 0.0,  16, grey);  // ramp underside
 
-    // Side boosting ramps
-    addRamp(scene, world, 5, 0.35, 8, -22, 4.2, 8,  -0.45, 0x999999);
-    addRamp(scene, world, 5, 0.35, 8,  22, 4.2, 8,  -0.45, 0x999999);
+    // Landing zone bump
+    staticBox(scene, world, 8, 1.0, 6, 0, 1.0, -14, dirt);
 
-    // Ski-jump style tall ramp
-    addRamp(scene, world, 4, 0.3, 12, 0, 7, -20, -0.55, 0x777777);
-    addStaticBox(scene, world, 4, 7.5, 0.6, 0, 7.5, -32, 0x666666);
+    // ---- Side angled ramps ----
+    ramp(scene, world,  5.5, 0.38, 10, -25, 5.0,  10, -0.48, 0, grey);
+    staticBox(scene, world, 5.5, 5.2, 0.7, -25, 5.0, 20, grey);
+    ramp(scene, world,  5.5, 0.38, 10,  25, 5.0,  10, -0.48, 0, grey);
+    staticBox(scene, world, 5.5, 5.2, 0.7,  25, 5.0, 20, grey);
 
-    // Pyramid of cars — the classic monster truck target!
+    // ---- Ski-jump ----
+    ramp(scene, world,  5, 0.35, 14,  0, 8.0, -26, -0.56, 0, grey);
+    staticBox(scene, world, 5, 8.4, 0.8, 0, 8.0, -40, grey);
+
+    // ---- Table-top platform ----
+    staticBox(scene, world, 6, 3.5, 5.5, -35, 3.5,  -8, grey);
+    ramp(scene, world, 6, 0.3, 5, -35, 4.8, -14, -0.60, 0, grey);
+    ramp(scene, world, 6, 0.3, 5, -35, 4.8,  -2,  0.60, 0, grey);
+
+    // ---- Loop-de-loop section (angled walls as partial loop) ----
+    ramp(scene, world, 4, 0.35, 5, 38, 5.0, -18, -0.70, 0, grey);
+    ramp(scene, world, 4, 0.35, 5, 38, 5.0, -10,  0.70, 0, grey);
+    ramp(scene, world, 4, 0.35, 5, 38, 6.5, -14, 0, 0, grey);  // flat top
+
+    // ---- Car pyramid — the centrepiece ----
     const carCols = [0xcc2222, 0x2255cc, 0x22aa44, 0xeeaa00, 0x9933cc, 0xff6600];
-    // Base layer: 4 cars
-    [[-4.5,0],[-1.5,0],[1.5,0],[4.5,0]].forEach(([x,], i) => {
-        const obj = addDynamic(scene, world,
-            new CANNON.Box(new CANNON.Vec3(1.3, 0.5, 2.1)),
-            220,
-            x, 0.55, -20,
-            carCols[i % carCols.length]
-        );
-        obj.points = 250;
-        obj.label  = '🚗 PYRAMID HIT!';
-        objects.push(obj);
+    // Base 5
+    [-6,-3,0,3,6].forEach((x,i) => {
+        const o = dynBox(scene, world, 1.35, 0.52, 2.2, x, 0.55, -22, carCols[i%carCols.length], 220);
+        o.points = 250; o.label = '🚗 BASE SMASH!'; objects.push(o);
     });
-    // Layer 2: 3 cars
-    [[-3,0],[0,0],[3,0]].forEach(([x,], i) => {
-        const obj = addDynamic(scene, world,
-            new CANNON.Box(new CANNON.Vec3(1.3, 0.5, 2.1)),
-            220,
-            x, 1.55, -20,
-            carCols[(i+2) % carCols.length]
-        );
-        obj.points = 300;
-        obj.label  = '🚗 COMBO HIT!';
-        objects.push(obj);
+    // Layer 2 — 4 cars
+    [-4.5,-1.5,1.5,4.5].forEach((x,i) => {
+        const o = dynBox(scene, world, 1.35, 0.52, 2.2, x, 1.57, -22, carCols[(i+2)%carCols.length], 220);
+        o.points = 325; o.label = '🚗 LAYER HIT!'; objects.push(o);
     });
-    // Top: 1 car
-    const topCar = addDynamic(scene, world,
-        new CANNON.Box(new CANNON.Vec3(1.3, 0.5, 2.1)),
-        220,
-        0, 2.55, -20,
-        0xffdd00
-    );
-    topCar.points = 500;
-    topCar.label  = '🏆 TOP CAR!';
-    objects.push(topCar);
+    // Layer 3 — 3 cars
+    [-3,0,3].forEach((x,i) => {
+        const o = dynBox(scene, world, 1.35, 0.52, 2.2, x, 2.60, -22, carCols[(i+4)%carCols.length], 220);
+        o.points = 400; o.label = '🏆 COMBO HIT!'; objects.push(o);
+    });
+    // Top — golden car
+    const topCar = dynBox(scene, world, 1.35, 0.52, 2.2, 0, 3.64, -22, 0xffdd00, 200);
+    topCar.points = 750; topCar.label = '👑 TOP CAR!'; objects.push(topCar);
 
-    // Tyre stacks as slalom
-    for (let i = -2; i <= 2; i++) {
-        const baseZ = i * 9;
-        for (let t = 0; t < 4; t++) {
-            const obj = addDynamic(scene, world,
-                new CANNON.Cylinder(0.6, 0.6, 0.5, 12),
-                50,
-                i % 2 === 0 ? -15 : 15, 0.25 + t * 0.51, baseZ,
-                0x222222
-            );
-            obj.points = 50;
-            obj.label  = '🏁 TYRE SMASH!';
-            objects.push(obj);
+    // ---- Tyre slalom stacks ----
+    for (let col = -2; col <= 2; col++) {
+        const sx = (col % 2 === 0) ? -18 : 18;
+        const sz = col * 11;
+        for (let t = 0; t < 5; t++) {
+            const o = dynCyl(scene, world, 0.62, 0.52, sx, 0.26+t*0.53, sz, 0x222222, 55);
+            o.points = 55; o.label = '🏁 TYRE SMASH!'; objects.push(o);
         }
     }
 
-    // Barrels along inner edge
-    for (let i = 0; i < 8; i++) {
-        const a = (i / 8) * Math.PI * 2;
-        const r = 18;
-        const obj = addDynamic(scene, world,
-            new CANNON.Cylinder(0.45, 0.45, 1.2, 12),
-            90,
-            Math.cos(a) * r, 0.6, Math.sin(a) * r,
-            i % 2 === 0 ? 0xff3300 : 0x0033ff
-        );
-        obj.points = 75;
-        obj.label  = '💥 BARREL BASH!';
-        objects.push(obj);
+    // ---- Red barrels around perimeter ----
+    for (let i = 0; i < 10; i++) {
+        const a = (i/10)*Math.PI*2, r = 20;
+        const o = dynCyl(scene, world, 0.45, 1.2,
+            Math.cos(a)*r, 0.6, Math.sin(a)*r,
+            i%2===0 ? 0xff2200 : 0x0044ff, 90);
+        o.points = 85; o.label = '💥 BARREL BASH!'; objects.push(o);
     }
 
-    // Big jump table (for sustained airtime)
-    addStaticBox(scene, world, 5, 3.5, 4, -30, 3.6, -5,  0x888888);
-    addRamp(scene, world, 5, 0.3, 5, -30, 5.3, -10, -0.6, 0x888888);
-    addRamp(scene, world, 5, 0.3, 5, -30, 5.3,   0,  0.6, 0x888888);
+    // ---- Destructible fence posts ----
+    for (let i = -5; i <= 5; i++) {
+        const o = dynCyl(scene, world, 0.15, 1.5, i*6, 0.75, 35, 0xdddddd, 20);
+        o.points = 20; o.label = '🏚️ FENCE DOWN!'; objects.push(o);
+    }
 
-    // Dirt mound obstacles mid-arena
-    addStaticBox(scene, world, 3, 1.5, 3, 15, 1.5, -30, 0x7a4a1e);
-    addStaticBox(scene, world, 4, 2.0, 4, -10, 2.0, 30, 0x7a4a1e);
+    // ---- Spotlights ----
+    const spotDefs = [[-45,35,40],[45,35,40],[-45,35,-40],[45,35,-40]];
+    spotDefs.forEach(([x,y,z]) => {
+        const spot = new THREE.SpotLight(0xffffff, 1.6, 140, Math.PI*0.24, 0.38);
+        spot.position.set(x, y, z);
+        spot.target.position.set(0, 0, 0);
+        spot.castShadow = true;
+        tagMesh(spot); tagMesh(spot.target);
+        scene.add(spot); scene.add(spot.target);
+    });
+    ambLight(scene, 0x99aacc, 0.85);
 
-    // Spotlights
-    const createSpot = (x, y, z, tx, tz) => {
-        const light = new THREE.SpotLight(0xffffff, 1.5, 120, Math.PI * 0.25, 0.4);
-        light.position.set(x, y, z);
-        light.target.position.set(tx, 0, tz);
-        light.castShadow = true;
-        light.__arenaTag = true;
-        light.target.__arenaTag = true;
-        scene.add(light);
-        scene.add(light.target);
-    };
-
-    createSpot(-40, 30,  30,  0,  0);
-    createSpot( 40, 30,  30,  0,  0);
-    createSpot(-40, 30, -30,  0,  0);
-    createSpot( 40, 30, -30,  0,  0);
-
-    const amb = new THREE.AmbientLight(0x8899bb, 0.8);
-    amb.__arenaTag = true;
-    scene.add(amb);
-
-    return { objects, spawnPos: new CANNON.Vec3(0, 3, 35) };
+    return { objects, spawnPos: new CANNON.Vec3(0, 3, 38) };
 }
