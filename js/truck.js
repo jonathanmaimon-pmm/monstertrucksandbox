@@ -1,4 +1,5 @@
-import * as THREE from 'three';
+import * as THREE  from 'three';
+import * as CANNON from 'cannon-es';
 
 /**
  * Monster Truck — cannon-es RaycastVehicle + Three.js visual mesh.

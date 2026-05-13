@@ -7,7 +7,6 @@
 
 import * as THREE  from 'three';
 import * as CANNON from 'cannon-es';
-window.CANNON = CANNON;   // expose for truck.js / arenas.js (loaded after this)
 
 import { Controls } from './controls.js';
 import { UI }       from './ui.js';
@@ -31,43 +30,43 @@ const CAMERA_LERP    = 0.06;
 class Game {
     constructor() {
         // Public state (read by UI)
-        this.state        = 'menu';  // menu | playing | paused | gameover
+        this.state        = 'menu';
         this.mode         = 'freeplay';
         this.currentArena = 0;
         this.score        = 0;
         this.timeLeft     = TIMED_DURATION;
-        this.customization = {};     // filled in by UI
+        this.customization = {};
 
-        // Three.js
-        this.canvas   = document.getElementById('gameCanvas');
-        this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true });
-        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-        this.renderer.shadowMap.enabled = true;
-        this.renderer.shadowMap.type    = THREE.PCFSoftShadowMap;
-
-        this.scene  = new THREE.Scene();
-        this.camera = new THREE.PerspectiveCamera(65, 1, 0.3, 600);
-        this._resize();
-
-        // Physics world
-        this.world = new CANNON.World({
-            gravity: new CANNON.Vec3(0, -22, 0),
-        });
-        this.world.broadphase = new CANNON.SAPBroadphase(this.world);
-        this.world.allowSleep = true;
-
-        // Ground contact material (shared)
-        this.groundMat  = new CANNON.Material('ground');
-        this.vehicleMat = new CANNON.Material('vehicle');
-        this.world.addContactMaterial(new CANNON.ContactMaterial(
-            this.groundMat, this.vehicleMat, { friction: 0.6, restitution: 0.2 }
-        ));
-
-        // Input
+        // --------------------------------------------------------
+        // Wire input + UI FIRST so menu buttons work even if the
+        // 3D / physics stack fails to initialise.
+        // --------------------------------------------------------
         this.controls = new Controls();
-
-        // UI (references game and controls)
         this.ui = new UI(this);
+
+        // --------------------------------------------------------
+        // Three.js + cannon-es (wrapped so any failure surfaces
+        // in the UI instead of silently killing the page).
+        // --------------------------------------------------------
+        try {
+            this.canvas   = document.getElementById('gameCanvas');
+            this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true });
+            this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            this.renderer.shadowMap.enabled = true;
+            this.renderer.shadowMap.type    = THREE.PCFSoftShadowMap;
+
+            this.scene  = new THREE.Scene();
+            this.camera = new THREE.PerspectiveCamera(65, 1, 0.3, 600);
+            this._resize();
+
+            this.world = new CANNON.World({ gravity: new CANNON.Vec3(0, -22, 0) });
+            this.world.broadphase = new CANNON.SAPBroadphase(this.world);
+            this.world.allowSleep = true;
+        } catch (err) {
+            console.error('Engine init failed:', err);
+            showFatalError(err);
+            return;
+        }
 
         // Runtime
         this.truck        = null;
@@ -357,6 +356,29 @@ class Game {
 // ====================================================================
 // Boot
 // ====================================================================
+function showFatalError(err) {
+    const el = document.createElement('div');
+    el.style.cssText = `
+        position:fixed; top:0; left:0; right:0; z-index:9999;
+        background:#cc1122; color:#fff; padding:14px 18px;
+        font-family: monospace; font-size:13px; line-height:1.5;
+        white-space:pre-wrap; max-height:50vh; overflow:auto;`;
+    el.textContent = `Engine init failed — game won't run.\n${err && err.message || err}\n\n${err && err.stack || ''}`;
+    document.body.appendChild(el);
+}
+
 window.addEventListener('DOMContentLoaded', () => {
-    window._game = new Game();
+    try {
+        window._game = new Game();
+    } catch (err) {
+        console.error(err);
+        showFatalError(err);
+    }
+});
+
+window.addEventListener('error', (e) => {
+    // Surface module load failures (importmap / CDN issues)
+    if (e.filename && (e.filename.includes('esm.sh') || e.filename.includes('jsdelivr'))) {
+        showFatalError(new Error(`Failed to load module: ${e.filename}\n${e.message}`));
+    }
 });
