@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Monster Truck Madness!</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka+One&family=Nunito:wght@700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js"></script>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="ui">
+
+        <!-- MAIN MENU -->
+        <div id="screen-menu" class="screen active">
+            <div class="title-block">
+                <div class="title-emoji">🚛</div>
+                <h1 class="title-main">MONSTER TRUCK</h1>
+                <h2 class="title-sub">MADNESS!</h2>
+            </div>
+            <div class="menu-buttons">
+                <button class="btn btn-play" id="btn-play">🎮&nbsp; PLAY!</button>
+                <button class="btn btn-secondary" id="btn-customize">🎨&nbsp; CUSTOMIZE TRUCK</button>
+            </div>
+            <div class="menu-controls-hint">
+                <span>Desktop: WASD / Arrow Keys &nbsp;|&nbsp; Mobile: On-screen joystick</span>
+            </div>
+        </div>
+
+        <!-- CUSTOMIZE -->
+        <div id="screen-customize" class="screen">
+            <div class="screen-header">
+                <button class="btn-back" id="btn-customize-back">← BACK</button>
+                <h2>CUSTOMIZE YOUR TRUCK</h2>
+            </div>
+            <div class="customize-layout">
+                <div class="customize-preview">
+                    <div class="preview-truck" id="preview-truck">🚛</div>
+                    <div class="preview-name" id="preview-name">MY TRUCK</div>
+                </div>
+                <div class="customize-options">
+                    <div class="option-group">
+                        <h3>TRUCK NAME</h3>
+                        <input type="text" id="truck-name-input" class="name-input"
+                               placeholder="MY TRUCK" maxlength="12" value="MY TRUCK">
+                    </div>
+                    <div class="option-group">
+                        <h3>TRUCK STYLE</h3>
+                        <div class="style-row" id="style-buttons">
+                            <button class="style-btn active" data-style="0">🚛 CLASSIC</button>
+                            <button class="style-btn" data-style="1">⚡ SPORTY</button>
+                            <button class="style-btn" data-style="2">🦾 BIGFOOT</button>
+                        </div>
+                    </div>
+                    <div class="option-group">
+                        <h3>TRUCK COLOR</h3>
+                        <div class="color-grid" id="body-color-grid">
+                            <div class="color-swatch active" data-color="#ff2020" style="background:#ff2020" title="Red"></div>
+                            <div class="color-swatch" data-color="#2060ff" style="background:#2060ff" title="Blue"></div>
+                            <div class="color-swatch" data-color="#20cc20" style="background:#20cc20" title="Green"></div>
+                            <div class="color-swatch" data-color="#ffd700" style="background:#ffd700" title="Gold"></div>
+                            <div class="color-swatch" data-color="#ff8800" style="background:#ff8800" title="Orange"></div>
+                            <div class="color-swatch" data-color="#cc00ff" style="background:#cc00ff" title="Purple"></div>
+                            <div class="color-swatch" data-color="#ff69b4" style="background:#ff69b4" title="Pink"></div>
+                            <div class="color-swatch" data-color="#111111" style="background:#111111" title="Black"></div>
+                        </div>
+                    </div>
+                    <div class="option-group">
+                        <h3>WHEEL COLOR</h3>
+                        <div class="color-grid" id="wheel-color-grid">
+                            <div class="color-swatch active" data-color="#222222" style="background:#222222"></div>
+                            <div class="color-swatch" data-color="#888888" style="background:#888888"></div>
+                            <div class="color-swatch" data-color="#ffd700" style="background:#ffd700"></div>
+                            <div class="color-swatch" data-color="#ff2020" style="background:#ff2020"></div>
+                            <div class="color-swatch" data-color="#2060ff" style="background:#2060ff"></div>
+                            <div class="color-swatch" data-color="#cc00ff" style="background:#cc00ff"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <button class="btn btn-play" id="btn-customize-done">✅&nbsp; DONE!</button>
+        </div>
+
+        <!-- ARENA SELECT -->
+        <div id="screen-arena" class="screen">
+            <div class="screen-header">
+                <button class="btn-back" id="btn-arena-back">← BACK</button>
+                <h2>PICK YOUR ARENA!</h2>
+            </div>
+            <div class="arena-grid">
+                <div class="arena-card" data-arena="0">
+                    <div class="arena-icon">🏜️</div>
+                    <div class="arena-name">DESERT DUNES</div>
+                    <div class="arena-desc">Sandy ramps, buried cars,<br>dust and total destruction!</div>
+                    <div class="arena-stars">⭐⭐☆</div>
+                </div>
+                <div class="arena-card" data-arena="1">
+                    <div class="arena-icon">🏙️</div>
+                    <div class="arena-name">CITY CRUSHER</div>
+                    <div class="arena-desc">Urban chaos! Smash cars<br>and leap over everything!</div>
+                    <div class="arena-stars">⭐⭐⭐</div>
+                </div>
+                <div class="arena-card" data-arena="2">
+                    <div class="arena-icon">🏟️</div>
+                    <div class="arena-name">STADIUM SLAM</div>
+                    <div class="arena-desc">Classic monster madness!<br>Big ramps, jumps &amp; glory!</div>
+                    <div class="arena-stars">⭐☆☆</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- MODE SELECT -->
+        <div id="screen-mode" class="screen">
+            <div class="screen-header">
+                <button class="btn-back" id="btn-mode-back">← BACK</button>
+                <h2>CHOOSE YOUR MODE!</h2>
+            </div>
+            <div class="mode-grid">
+                <div class="mode-card" id="btn-freeplay">
+                    <div class="mode-icon">🕹️</div>
+                    <div class="mode-name">FREE PLAY</div>
+                    <div class="mode-desc">Drive forever!<br>No timer, just pure fun!</div>
+                </div>
+                <div class="mode-card" id="btn-timed">
+                    <div class="mode-icon">⏱️</div>
+                    <div class="mode-name">TIMED CHALLENGE</div>
+                    <div class="mode-desc">2 minutes to smash<br>as much as you can!</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- HUD (in-game overlay) -->
+        <div id="screen-hud" class="screen">
+            <div class="hud-top">
+                <div class="hud-box">
+                    <div class="hud-label">SCORE</div>
+                    <div class="hud-value" id="hud-score">0</div>
+                </div>
+                <div class="hud-box hud-center" id="hud-timer-box">
+                    <div class="hud-label">TIME</div>
+                    <div class="hud-value" id="hud-timer">2:00</div>
+                </div>
+                <div class="hud-box hud-right">
+                    <div class="hud-value" id="hud-speed">0</div>
+                    <div class="hud-label">MPH</div>
+                </div>
+            </div>
+            <div id="stunt-display" class="stunt-display"></div>
+            <div class="hud-name-bar" id="hud-truck-name">MY TRUCK</div>
+            <button class="btn-pause" id="btn-pause">⏸</button>
+        </div>
+
+        <!-- PAUSE -->
+        <div id="screen-pause" class="screen">
+            <div class="overlay-panel">
+                <h2>⏸ PAUSED</h2>
+                <button class="btn btn-play" id="btn-resume">▶ RESUME</button>
+                <button class="btn btn-secondary" id="btn-restart">🔄 RESTART</button>
+                <button class="btn btn-danger" id="btn-quit">🏠 MAIN MENU</button>
+            </div>
+        </div>
+
+        <!-- GAME OVER -->
+        <div id="screen-gameover" class="screen">
+            <div class="overlay-panel">
+                <h2 id="gameover-title">⏱ TIME'S UP!</h2>
+                <div class="final-score-label">FINAL SCORE</div>
+                <div class="final-score-value" id="final-score">0</div>
+                <div class="final-breakdown" id="final-breakdown"></div>
+                <button class="btn btn-play" id="btn-replay">🔄 PLAY AGAIN</button>
+                <button class="btn btn-secondary" id="btn-to-menu">🏠 MAIN MENU</button>
+            </div>
+        </div>
+
+        <!-- LOADING -->
+        <div id="screen-loading" class="screen">
+            <div class="loading-content">
+                <div class="loading-truck">🚛</div>
+                <div class="loading-text">LOADING ARENA...</div>
+                <div class="loading-bar">
+                    <div class="loading-fill" id="loading-fill"></div>
+                </div>
+            </div>
+        </div>
+
+    </div><!-- /#ui -->
+
+    <!-- Mobile Controls (shown only during gameplay on touch devices) -->
+    <div id="mobile-controls">
+        <div id="joystick-zone">
+            <div id="joystick-base">
+                <div id="joystick-knob"></div>
+            </div>
+            <div class="joystick-hint">DRIVE</div>
+        </div>
+        <div id="action-zone">
+            <button class="action-btn" id="btn-flip">↺<br><small>FLIP</small></button>
+            <button class="action-btn" id="btn-boost">⚡<br><small>BOOST</small></button>
+        </div>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>
