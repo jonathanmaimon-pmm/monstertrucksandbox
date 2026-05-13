@@ -90,8 +90,8 @@ export class Truck {
             dampingRelaxation:   2.4,
             dampingCompression:  4.4,
             maxSuspensionForce:  160000,
-            // Very low roll influence — prevents tip-overs on turns
-            rollInfluence:       0.005,
+            // Zero roll influence — completely prevent tire-reaction roll
+            rollInfluence:       0,
             axleLocal:           new CANNON.Vec3(1, 0, 0),
             maxSuspensionTravel: 0.65,
             customSlidingRotationalSpeed:    -30,
@@ -106,6 +106,16 @@ export class Truck {
         ].forEach(p => this.vehicle.addWheel({ ...baseOpts, chassisConnectionPointLocal: p }));
 
         this.vehicle.addToWorld(world);
+
+        // Amplify pitch & roll inertia so engine torque can't flip the chassis.
+        // Must be called AFTER addToWorld so cannon-es has computed mass props.
+        this.chassisBody.updateMassProperties();
+        const ii = this.chassisBody.inertia;
+        ii.x *= 14;   // pitch (nose-up on acceleration)
+        ii.z *= 10;   // roll  (tip sideways on turns)
+        this.chassisBody.invInertia.set(1/ii.x, 1/ii.y, 1/ii.z);
+        // invInertiaSolve used during constraint solving — also update it
+        this.chassisBody.invInertiaSolve.set(1/ii.x, 1/ii.y, 1/ii.z);
 
         this._wheelBodies = this.vehicle.wheelInfos.map(w => {
             const b = new CANNON.Body({ mass: 0 });
@@ -235,6 +245,11 @@ export class Truck {
         this.vehicle.setSteeringValue(this._steerAngle, 0);
         this.vehicle.setSteeringValue(this._steerAngle, 1);
 
+        // Stability: damp pitch and roll angular velocity every frame.
+        // This is the primary wheelie/flip prevention — works regardless
+        // of how large the engine impulse is.
+        this._stabilize();
+
         // Jump
         if (controls.jump && this._jumpCooldown <= 0) {
             this._tryJump();
@@ -256,6 +271,34 @@ export class Truck {
         const v = this.chassisBody.velocity;
         this.speed = Math.sqrt(v.x*v.x + v.z*v.z) * 2.237;
         this.isAirborne = !wi.some(w => w.isInContact);
+    }
+
+    // ----------------------------------------------------------------
+    // Per-frame stability — damp pitch & roll angular velocity.
+    // Applied every frame; does not affect yaw (steering).
+    // Without this, engine torque alone is enough to flip the chassis.
+    // ----------------------------------------------------------------
+    _stabilize() {
+        const av = this.chassisBody.angularVelocity;
+        const q  = this.chassisBody.quaternion;
+
+        // Truck's RIGHT axis in world space = pitch rotation axis
+        const right = new CANNON.Vec3();
+        q.vmult(new CANNON.Vec3(1, 0, 0), right);
+        const pitchRate = av.dot(right);
+        // Remove 90 % of pitch velocity each frame
+        av.x -= right.x * pitchRate * 0.90;
+        av.y -= right.y * pitchRate * 0.90;
+        av.z -= right.z * pitchRate * 0.90;
+
+        // Truck's FORWARD axis in world space = roll rotation axis
+        const fwd = new CANNON.Vec3();
+        q.vmult(new CANNON.Vec3(0, 0, 1), fwd);
+        const rollRate = av.dot(fwd);
+        // Remove 88 % of roll velocity each frame
+        av.x -= fwd.x * rollRate * 0.88;
+        av.y -= fwd.y * rollRate * 0.88;
+        av.z -= fwd.z * rollRate * 0.88;
     }
 
     // ----------------------------------------------------------------
