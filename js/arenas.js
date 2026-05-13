@@ -151,13 +151,16 @@ function dynCyl(scene, world, r, h, x, y, z, color, mass) {
 }
 
 /**
- * Scatter terrain bumps — partially buried boxes/rounded "dunes".
- * These give the ground physical texture and visual variety.
+ * Scatter terrain bumps — partially buried boxes that protrude slightly.
+ * Seed format: [x, z, halfW, halfL, fullHeight, color]
+ * fullHeight is the TOTAL visible height above ground (0.3 – 2.0 m is sensible).
+ * staticBox takes half-extents, so we divide by 2 internally.
  */
 function scatterBumps(scene, world, defs) {
-    defs.forEach(([x, z, rx, rz, h, color]) => {
-        const bury = h * 0.35;  // bury 35% below ground
-        staticBox(scene, world, rx, h, rz, x, h - bury, z, color);
+    defs.forEach(([x, z, hw, hl, fullH, color]) => {
+        const hh = fullH * 0.5;          // half-height for staticBox
+        const cy = fullH * 0.10;         // centre Y: 80% buried, 20% sticking out
+        staticBox(scene, world, hw, hh, hl, x, cy, z, color);
     });
 }
 

@@ -47,11 +47,11 @@ export class Truck {
         // Jump cooldown (prevent spam)
         this._jumpCooldown = 0;
 
-        // Driving params — tuned for fun, easy climbing, low flip risk
-        this.maxForce   = 3200;
-        this.boostForce = 5500;
-        this.maxSteer   = 0.58;
-        this.brakeForce = 80;
+        // Driving params — balanced: enough punch to climb, not enough to wheelie
+        this.maxForce   = 1800;
+        this.boostForce = 3000;
+        this.maxSteer   = 0.55;
+        this.brakeForce = 70;
         this._steerAngle = 0;
         this._steerVel   = 0;
     }
@@ -62,12 +62,12 @@ export class Truck {
     _buildPhysics(world, s, spawnPos) {
         // Wide, low chassis → high stability
         const chassisShape = new CANNON.Box(new CANNON.Vec3(s.bw, s.bh, s.bl));
-        this.chassisBody = new CANNON.Body({ mass: 140 });
-        // Shape offset: lower than before so CoM is closer to wheel plane
-        this.chassisBody.addShape(chassisShape, new CANNON.Vec3(0, 0.1, 0));
+        this.chassisBody = new CANNON.Body({ mass: 180 });  // heavier = harder to flip
+        // CoM kept very low so front wheels don't lift on hard acceleration
+        this.chassisBody.addShape(chassisShape, new CANNON.Vec3(0, -0.05, 0));
         this.chassisBody.position.copy(spawnPos);
-        this.chassisBody.angularDamping = 0.75;   // resist rolling/spinning
-        this.chassisBody.linearDamping  = 0.12;
+        this.chassisBody.angularDamping = 0.88;   // strong resistance to rotation
+        this.chassisBody.linearDamping  = 0.14;
 
         this.vehicle = new CANNON.RaycastVehicle({
             chassisBody:      this.chassisBody,
@@ -82,16 +82,16 @@ export class Truck {
         const baseOpts = {
             radius:              s.wr,
             directionLocal:      new CANNON.Vec3(0, -1, 0),
-            // Softer suspension = more compliance over bumps and obstacles
-            suspensionStiffness: 22,
-            suspensionRestLength:0.55,
-            // High frictionSlip = much better grip for climbing
-            frictionSlip:        9.0,
-            dampingRelaxation:   2.6,
-            dampingCompression:  4.6,
-            maxSuspensionForce:  180000,
-            // Very low roll influence prevents tipping on turns
-            rollInfluence:       0.004,
+            // Firm enough to not rock on acceleration, compliant enough for bumps
+            suspensionStiffness: 30,
+            suspensionRestLength:0.42,
+            // High frictionSlip = good grip for climbing
+            frictionSlip:        8.0,
+            dampingRelaxation:   2.4,
+            dampingCompression:  4.4,
+            maxSuspensionForce:  160000,
+            // Very low roll influence — prevents tip-overs on turns
+            rollInfluence:       0.005,
             axleLocal:           new CANNON.Vec3(1, 0, 0),
             maxSuspensionTravel: 0.65,
             customSlidingRotationalSpeed:    -30,
@@ -223,10 +223,15 @@ export class Truck {
 
         const brakeF = controls.brake ? this.brakeForce : (force === 0 ? 10 : 0);
 
-        for (let i = 0; i < 4; i++) {
-            this.vehicle.applyEngineForce(force, i);
-            this.vehicle.setBrake(brakeF, i);
-        }
+        // Rear-wheel drive by default — prevents front lift / wheelies.
+        // Boost engages all four wheels for maximum traction on ramps.
+        const frontForce = boost ? force * 0.6 : 0;
+        this.vehicle.applyEngineForce(frontForce, 0);
+        this.vehicle.applyEngineForce(frontForce, 1);
+        this.vehicle.applyEngineForce(force, 2);
+        this.vehicle.applyEngineForce(force, 3);
+
+        for (let i = 0; i < 4; i++) this.vehicle.setBrake(brakeF, i);
         this.vehicle.setSteeringValue(this._steerAngle, 0);
         this.vehicle.setSteeringValue(this._steerAngle, 1);
 
